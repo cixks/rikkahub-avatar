@@ -29,14 +29,18 @@ jobs:
         working-directory: web-ui
         run: pnpm install --frozen-lockfile
 
-      - uses: android-actions/setup-android@v3
-
       - name: Install SDK packages
         run: |
-          sdkmanager "platforms;android-37.2" "platform-tools" "build-tools;36.0.0" "ndk;28.2.13676358"
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then SDKM="$(command -v sdkmanager)"; fi
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+          "$SDKM" "platforms;android-37.2" "platform-tools" "build-tools;36.0.0" "ndk;28.2.13676358"
 
       - name: Prepare build files
         run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           echo "sdk.dir=$ANDROID_HOME" > local.properties
           cat > app/google-services.json <<'EOF'
           {
