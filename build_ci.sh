@@ -36,24 +36,19 @@ elif command -v yum >/dev/null 2>&1; then
 fi
 
 echo "=== 1. JDK 21 ==="
-export JAVA_HOME=""
+# 这个镜像里 /usr/share/man/man1 不存在，会导致 openjdk 的 postinst 失败、证书库不生成
+mkdir -p /usr/share/man/man1 || true
+apt-get install -y -qq openjdk-21-jdk-headless ca-certificates ca-certificates-java || true
+dpkg --configure -a || true
+update-ca-certificates -f || true
+
 if [ -d /usr/lib/jvm/java-21-openjdk-amd64 ]; then
   export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-else
-  # 优先用系统包管理器（Gitee 云端的 apt 源是通的）
-  echo "尝试 apt 安装 openjdk-21 ..."
-  apt-get install -y -qq openjdk-21-jdk-headless || true
-  if [ -d /usr/lib/jvm/java-21-openjdk-amd64 ]; then
-    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-  elif [ -d /usr/lib/jvm/java-21-openjdk ]; then
-    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
-  fi
 fi
-if [ -z "$JAVA_HOME" ]; then
+if [ -z "${JAVA_HOME:-}" ]; then
   echo "apt 没装上，改用镜像下载 Temurin 21..."
   download /tmp/jdk21.tar.gz \
-    "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jdk/x64/linux/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz" \
-    "https://mirrors.aliyun.com/macports/distfiles/openjdk21/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz" \
+    "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jdk/x64/linux/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz" \
     "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
   mkdir -p /opt/jdk21
   tar -xzf /tmp/jdk21.tar.gz -C /opt/jdk21 --strip-components=1
@@ -61,6 +56,22 @@ if [ -z "$JAVA_HOME" ]; then
 fi
 export PATH="$JAVA_HOME/bin:$PATH"
 java -version
+
+CERT_COUNT=$(keytool -list -cacerts -storepass changeit 2>/dev/null | grep -c "trustedCertEntry" || true)
+echo "cacerts 条目数: ${CERT_COUNT:-0}"
+if [ "${CERT_COUNT:-0}" -lt 10 ]; then
+  echo "系统证书库异常，改用 Temurin 自带的完整证书库"
+  download /tmp/jdk21b.tar.gz \
+    "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jdk/x64/linux/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz" \
+    "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
+  rm -rf /opt/jdk21
+  mkdir -p /opt/jdk21
+  tar -xzf /tmp/jdk21b.tar.gz -C /opt/jdk21 --strip-components=1
+  export JAVA_HOME=/opt/jdk21
+  export PATH="$JAVA_HOME/bin:$PATH"
+  java -version
+  keytool -list -cacerts -storepass changeit 2>/dev/null | grep -c "trustedCertEntry" || true
+fi
 
 echo "=== 2. Android SDK ==="
 export ANDROID_HOME=/opt/android-sdk
@@ -167,6 +178,19 @@ echo "=== 5. 构建 web-ui ==="
 (cd web-ui && pnpm install --frozen-lockfile && pnpm run build)
 
 echo "=== 6. Gradle 编译 APK ==="
+# 先把 Gradle 发行包用 curl 下好（curl 用系统证书，不受 Java 证书库影响），避免 wrapper 下不动
+GDIST=/opt/gradle-dist.zip
+if download "$GDIST" \
+  "https://mirrors.cloud.tencent.com/gradle/gradle-9.6.0-bin.zip" \
+  "https://repo.huaweicloud.com/gradle/gradle-9.6.0-bin.zip"; then
+  if unzip -tq "$GDIST" >/dev/null 2>&1; then
+    sed -i "s#^distributionUrl=.*#distributionUrl=file\\\\://$GDIST#" gradle/wrapper/gradle-wrapper.properties
+    echo "使用本地 Gradle 发行包"
+  else
+    rm -f "$GDIST"
+  fi
+fi
+
 chmod +x ./gradlew
 ./gradlew assembleGithubDebug assembleGithubRelease --no-daemon --stacktrace
 
