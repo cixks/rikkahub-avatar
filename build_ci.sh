@@ -191,8 +191,31 @@ if download "$GDIST" \
   fi
 fi
 
+# 国内镜像：阿里云放在最前面，避免 Gradle 卡在 google()/mavenCentral()/JitPack
+mkdir -p "$HOME/.gradle"
+cat > "$HOME/.gradle/init.gradle.kts" <<'EOF'
+gradle.beforeSettings {
+    pluginManagement {
+        repositories {
+            maven("https://maven.aliyun.com/repository/gradle-plugin")
+            maven("https://maven.aliyun.com/repository/google")
+            maven("https://maven.aliyun.com/repository/public")
+        }
+    }
+    dependencyResolutionManagement {
+        repositories {
+            maven("https://maven.aliyun.com/repository/google")
+            maven("https://maven.aliyun.com/repository/public")
+        }
+    }
+}
+EOF
+
 chmod +x ./gradlew
-./gradlew assembleGithubDebug assembleGithubRelease --no-daemon --stacktrace
+./gradlew assembleGithubDebug assembleGithubRelease \
+  --no-daemon --stacktrace --console=plain --info \
+  -Dorg.gradle.internal.http.connectionTimeout=60000 \
+  -Dorg.gradle.internal.http.socketTimeout=180000
 
 echo "=== 7. 产物 ==="
 find app/build/outputs/apk -name "*.apk" -print
