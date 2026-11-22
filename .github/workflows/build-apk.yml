@@ -85,10 +85,16 @@ jobs:
           keyPassword=rikkahub123
           EOF
 
+      - name: Single APK (disable ABI splits)
+        run: |
+          sed -i 's/isEnable = !isBuildingBundle/isEnable = false/' app/build.gradle.kts
+          grep -n "isEnable" app/build.gradle.kts
+
       - name: Build debug APK
         run: |
           chmod +x gradlew
           ./gradlew assembleGithubDebug --no-daemon --stacktrace
+          ls -lh app/build/outputs/apk/github/debug/
 
       - uses: actions/upload-artifact@v4
         with:
@@ -103,6 +109,7 @@ jobs:
           name: RikkaHub 头像版 debug #${{ github.run_number }}
           prerelease: true
           body: |
-            自动构建的 debug APK，包名 `me.rerere.rikkahub.debug`，可与官方版共存。
+            单个 APK，下载即可安装。
+            包名 `me.rerere.rikkahub.debug`，可与官方版共存，不会覆盖现有聊天数据。
             提交：${{ github.sha }}
           files: app/build/outputs/apk/github/debug/*.apk
