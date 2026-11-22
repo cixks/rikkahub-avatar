@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Gitee Go 云端构建脚本：安装工具链 -> 生成占位配置 -> 编译 debug/release APK
+# Gitee Go Android 构建插件用脚本：复用插件装的 JDK/SDK/NDK，只补缺的包并编译 debug APK
 set -euo pipefail
 
 echo "========== RikkaHub avatar build =========="
+echo "CPU: $(nproc 2>/dev/null || echo ?), MEM:"
+free -m 2>/dev/null || true
 
 export DEBIAN_FRONTEND=noninteractive
 
-# 多镜像 + 重试下载：第一个 URL 失败就换下一个
 download() {
   local out="$1"; shift
   local url
@@ -36,80 +37,52 @@ elif command -v yum >/dev/null 2>&1; then
 fi
 
 echo "=== 1. JDK 21 ==="
-# 这个镜像里 /usr/share/man/man1 不存在，会导致 openjdk 的 postinst 失败、证书库不生成
-mkdir -p /usr/share/man/man1 || true
-apt-get install -y -qq openjdk-21-jdk-headless ca-certificates ca-certificates-java || true
-dpkg --configure -a || true
-update-ca-certificates -f || true
-
-if [ -d /usr/lib/jvm/java-21-openjdk-amd64 ]; then
-  export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
-fi
-if [ -z "${JAVA_HOME:-}" ]; then
-  echo "apt 没装上，改用镜像下载 Temurin 21..."
-  download /tmp/jdk21.tar.gz \
-    "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jdk/x64/linux/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz" \
-    "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
-  mkdir -p /opt/jdk21
-  tar -xzf /tmp/jdk21.tar.gz -C /opt/jdk21 --strip-components=1
-  export JAVA_HOME=/opt/jdk21
+if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+  echo "使用插件提供的 JDK: $JAVA_HOME"
+else
+  mkdir -p /usr/share/man/man1 || true
+  apt-get install -y -qq openjdk-21-jdk-headless ca-certificates ca-certificates-java || true
+  dpkg --configure -a || true
+  update-ca-certificates -f || true
+  if [ -d /usr/lib/jvm/java-21-openjdk-amd64 ]; then
+    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+  else
+    download /tmp/jdk21.tar.gz \
+      "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jdk/x64/linux/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz" \
+      "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
+    mkdir -p /opt/jdk21
+    tar -xzf /tmp/jdk21.tar.gz -C /opt/jdk21 --strip-components=1
+    export JAVA_HOME=/opt/jdk21
+  fi
 fi
 export PATH="$JAVA_HOME/bin:$PATH"
 java -version
 
-CERT_COUNT=$(keytool -list -cacerts -storepass changeit 2>/dev/null | grep -c "trustedCertEntry" || true)
-echo "cacerts 条目数: ${CERT_COUNT:-0}"
-if [ "${CERT_COUNT:-0}" -lt 10 ]; then
-  echo "系统证书库异常，改用 Temurin 自带的完整证书库"
-  download /tmp/jdk21b.tar.gz \
-    "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jdk/x64/linux/OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz" \
-    "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
-  rm -rf /opt/jdk21
-  mkdir -p /opt/jdk21
-  tar -xzf /tmp/jdk21b.tar.gz -C /opt/jdk21 --strip-components=1
-  export JAVA_HOME=/opt/jdk21
-  export PATH="$JAVA_HOME/bin:$PATH"
-  java -version
-  keytool -list -cacerts -storepass changeit 2>/dev/null | grep -c "trustedCertEntry" || true
-fi
-
 echo "=== 2. Android SDK ==="
-export ANDROID_HOME=/opt/android-sdk
+export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}"
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
-mkdir -p "$ANDROID_HOME/cmdline-tools"
-if [ ! -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+echo "ANDROID_HOME=$ANDROID_HOME"
+SDKMANAGER="$(command -v sdkmanager || true)"
+if [ -z "$SDKMANAGER" ] && [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+  SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+fi
+if [ -z "$SDKMANAGER" ]; then
+  mkdir -p "$ANDROID_HOME/cmdline-tools"
   download /tmp/cmdtools.zip \
     "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
-    "https://mirrors.aliyun.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
-    "https://mirrors.tuna.tsinghua.edu.cn/android/repository/commandlinetools-linux-11076708_latest.zip"
+    "https://mirrors.aliyun.com/android/repository/commandlinetools-linux-11076708_latest.zip"
   rm -rf /tmp/cmdtools
   unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
   rm -rf "$ANDROID_HOME/cmdline-tools/latest"
   mv /tmp/cmdtools/cmdline-tools "$ANDROID_HOME/cmdline-tools/latest"
+  SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 fi
-export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+export PATH="$(dirname "$SDKMANAGER"):$PATH"
 yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
-echo "可用 platform 列表（截取）:"
-sdkmanager --list 2>/dev/null | grep "platforms;android-3" | head -40 || true
-
-INSTALLED_PLATFORM=""
-for pkg in "platforms;android-37-ext2" "platforms;android-37.2" "platforms;android-37"; do
-  echo "尝试安装 $pkg ..."
-  if sdkmanager "$pkg" >/dev/null 2>&1; then
-    echo "已安装 $pkg"
-    INSTALLED_PLATFORM="$pkg"
-    break
-  fi
-done
-if [ -z "$INSTALLED_PLATFORM" ]; then
-  echo "!! 没找到 API 37 平台，尝试 API 36"
-  sdkmanager "platforms;android-36" || true
-fi
-sdkmanager "platform-tools" || true
-for bt in "build-tools;37.0.0" "build-tools;36.0.0"; do
-  if sdkmanager "$bt" >/dev/null 2>&1; then echo "已安装 $bt"; break; fi
-done
+# 项目 compileSdk = 37.2，AGP 还会要 build-tools 36
+sdkmanager "platforms;android-37.2" "platform-tools" "build-tools;36.0.0" || true
+sdkmanager "build-tools;37.0.0" || true
 
 echo "=== 3. Node 22 + pnpm 11 ==="
 if ! command -v node >/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then
@@ -121,8 +94,7 @@ print(next(x['version'] for x in d if x['version'].startswith('v22.')))
   echo "安装 Node $NODE_VER"
   download /tmp/node.tar.xz \
     "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-linux-x64.tar.xz" \
-    "https://registry.npmmirror.com/-/binary/node/${NODE_VER}/node-${NODE_VER}-linux-x64.tar.xz" \
-    "https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/${NODE_VER}/node-${NODE_VER}-linux-x64.tar.xz"
+    "https://registry.npmmirror.com/-/binary/node/${NODE_VER}/node-${NODE_VER}-linux-x64.tar.xz"
   mkdir -p /opt/node
   tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1
   export PATH="/opt/node/bin:$PATH"
@@ -171,27 +143,20 @@ keyAlias=rikka
 keyPassword=rikkahub123
 EOF
 
-sed -i 's/org.gradle.jvmargs=-Xmx8g/org.gradle.jvmargs=-Xmx3g/' gradle.properties
-echo 'firebaseCrashlytics.mappingFileUploadEnabled=false' >> gradle.properties
+# 云端 4G 内存：压小堆、关并行、关配置缓存
+sed -i 's/^org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8/' gradle.properties
+sed -i 's/^org.gradle.parallel=.*/org.gradle.parallel=false/' gradle.properties
+sed -i 's/^org.gradle.configuration-cache=.*/org.gradle.configuration-cache=false/' gradle.properties
+cat >> gradle.properties <<'EOF'
+kotlin.daemon.jvmargs=-Xmx768m -XX:MaxMetaspaceSize=256m
+org.gradle.workers.max=1
+firebaseCrashlytics.mappingFileUploadEnabled=false
+EOF
 
 echo "=== 5. 构建 web-ui ==="
 (cd web-ui && pnpm install --frozen-lockfile && pnpm run build)
 
 echo "=== 6. Gradle 编译 APK ==="
-# 先把 Gradle 发行包用 curl 下好（curl 用系统证书，不受 Java 证书库影响），避免 wrapper 下不动
-GDIST=/opt/gradle-dist.zip
-if download "$GDIST" \
-  "https://mirrors.cloud.tencent.com/gradle/gradle-9.6.0-bin.zip" \
-  "https://repo.huaweicloud.com/gradle/gradle-9.6.0-bin.zip"; then
-  if unzip -tq "$GDIST" >/dev/null 2>&1; then
-    sed -i "s#^distributionUrl=.*#distributionUrl=file\\\\://$GDIST#" gradle/wrapper/gradle-wrapper.properties
-    echo "使用本地 Gradle 发行包"
-  else
-    rm -f "$GDIST"
-  fi
-fi
-
-# 国内镜像：阿里云放在最前面，避免 Gradle 卡在 google()/mavenCentral()/JitPack
 mkdir -p "$HOME/.gradle"
 cat > "$HOME/.gradle/init.gradle.kts" <<'EOF'
 gradle.beforeSettings {
@@ -211,9 +176,20 @@ gradle.beforeSettings {
 }
 EOF
 
+GDIST=/opt/gradle-dist.zip
+if [ ! -s "$GDIST" ] && download "$GDIST" \
+  "https://mirrors.cloud.tencent.com/gradle/gradle-9.6.0-bin.zip" \
+  "https://repo.huaweicloud.com/gradle/gradle-9.6.0-bin.zip"; then
+  if ! unzip -tq "$GDIST" >/dev/null 2>&1; then rm -f "$GDIST"; fi
+fi
+if [ -s "$GDIST" ]; then
+  sed -i "s#^distributionUrl=.*#distributionUrl=file\\\\://$GDIST#" gradle/wrapper/gradle-wrapper.properties
+  echo "使用本地 Gradle 发行包"
+fi
+
 chmod +x ./gradlew
-./gradlew assembleGithubDebug assembleGithubRelease \
-  --no-daemon --stacktrace --console=plain --info \
+./gradlew assembleGithubDebug \
+  --no-daemon --stacktrace --console=plain --info --max-workers=1 \
   -Dorg.gradle.internal.http.connectionTimeout=60000 \
   -Dorg.gradle.internal.http.socketTimeout=180000
 
