@@ -6,32 +6,55 @@ echo "========== RikkaHub avatar build =========="
 
 export DEBIAN_FRONTEND=noninteractive
 
+# 多镜像 + 重试下载：第一个 URL 失败就换下一个
 download() {
-  local url="$1" out="$2"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$out" "$url"
-  else
-    wget -q -O "$out" "$url"
-  fi
+  local out="$1"; shift
+  local url
+  for url in "$@"; do
+    echo "下载尝试: $url"
+    if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 -o "$out" "$url"; then
+      echo "下载成功: $url"
+      return 0
+    fi
+    if command -v wget >/dev/null 2>&1; then
+      if wget -q --tries=3 --timeout=20 -O "$out" "$url"; then
+        echo "下载成功(wget): $url"
+        return 0
+      fi
+    fi
+  done
+  echo "所有下载地址都失败: $*"
+  return 1
 }
 
 echo "=== 0. 基础工具 ==="
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update -qq || true
-  apt-get install -y -qq curl unzip python3 xz-utils || true
+  apt-get install -y -qq curl unzip python3 xz-utils ca-certificates || true
 elif command -v yum >/dev/null 2>&1; then
-  yum install -y curl unzip python3 xz || true
+  yum install -y curl unzip python3 xz ca-certificates || true
 fi
-command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || {
-  echo "没有 curl/wget，无法下载工具链"; exit 1;
-}
 
 echo "=== 1. JDK 21 ==="
+export JAVA_HOME=""
 if [ -d /usr/lib/jvm/java-21-openjdk-amd64 ]; then
   export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 else
-  echo "下载 Temurin JDK 21..."
-  download "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse" /tmp/jdk21.tar.gz
+  # 优先用系统包管理器（Gitee 云端的 apt 源是通的）
+  echo "尝试 apt 安装 openjdk-21 ..."
+  apt-get install -y -qq openjdk-21-jdk-headless || true
+  if [ -d /usr/lib/jvm/java-21-openjdk-amd64 ]; then
+    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+  elif [ -d /usr/lib/jvm/java-21-openjdk ]; then
+    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
+  fi
+fi
+if [ -z "$JAVA_HOME" ]; then
+  echo "apt 没装上，改用镜像下载 Temurin 21..."
+  download /tmp/jdk21.tar.gz \
+    "https://mirrors.tuna.tsinghua.edu.cn/Adoptium/21/jdk/x64/linux/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz" \
+    "https://mirrors.aliyun.com/macports/distfiles/openjdk21/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz" \
+    "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
   mkdir -p /opt/jdk21
   tar -xzf /tmp/jdk21.tar.gz -C /opt/jdk21 --strip-components=1
   export JAVA_HOME=/opt/jdk21
@@ -44,8 +67,10 @@ export ANDROID_HOME=/opt/android-sdk
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
 mkdir -p "$ANDROID_HOME/cmdline-tools"
 if [ ! -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
-  echo "下载 Android cmdline-tools..."
-  download "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" /tmp/cmdtools.zip
+  download /tmp/cmdtools.zip \
+    "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
+    "https://mirrors.aliyun.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
+    "https://mirrors.tuna.tsinghua.edu.cn/android/repository/commandlinetools-linux-11076708_latest.zip"
   rm -rf /tmp/cmdtools
   unzip -q /tmp/cmdtools.zip -d /tmp/cmdtools
   rm -rf "$ANDROID_HOME/cmdline-tools/latest"
@@ -67,7 +92,7 @@ for pkg in "platforms;android-37-ext2" "platforms;android-37.2" "platforms;andro
   fi
 done
 if [ -z "$INSTALLED_PLATFORM" ]; then
-  echo "!! 没有找到 API 37 平台，尝试 API 36"
+  echo "!! 没找到 API 37 平台，尝试 API 36"
   sdkmanager "platforms;android-36" || true
 fi
 sdkmanager "platform-tools" || true
@@ -79,11 +104,14 @@ echo "=== 3. Node 22 + pnpm 11 ==="
 if ! command -v node >/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then
   NODE_VER=$(python3 -c "
 import json, urllib.request
-d=json.load(urllib.request.urlopen('https://nodejs.org/dist/index.json', timeout=30))
+d=json.load(urllib.request.urlopen('https://nodejs.org/dist/index.json', timeout=20))
 print(next(x['version'] for x in d if x['version'].startswith('v22.')))
 " 2>/dev/null || echo "v22.20.0")
   echo "安装 Node $NODE_VER"
-  download "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-linux-x64.tar.xz" /tmp/node.tar.xz
+  download /tmp/node.tar.xz \
+    "https://nodejs.org/dist/${NODE_VER}/node-${NODE_VER}-linux-x64.tar.xz" \
+    "https://registry.npmmirror.com/-/binary/node/${NODE_VER}/node-${NODE_VER}-linux-x64.tar.xz" \
+    "https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/${NODE_VER}/node-${NODE_VER}-linux-x64.tar.xz"
   mkdir -p /opt/node
   tar -xJf /tmp/node.tar.xz -C /opt/node --strip-components=1
   export PATH="/opt/node/bin:$PATH"
@@ -132,7 +160,7 @@ keyAlias=rikka
 keyPassword=rikkahub123
 EOF
 
-sed -i 's/org.gradle.jvmargs=-Xmx8g/org.gradle.jvmargs=-Xmx4g/' gradle.properties
+sed -i 's/org.gradle.jvmargs=-Xmx8g/org.gradle.jvmargs=-Xmx3g/' gradle.properties
 echo 'firebaseCrashlytics.mappingFileUploadEnabled=false' >> gradle.properties
 
 echo "=== 5. 构建 web-ui ==="
