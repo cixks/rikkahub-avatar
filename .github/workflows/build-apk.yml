@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -93,3 +95,14 @@ jobs:
           name: rikkahub-debug
           path: app/build/outputs/apk/github/debug/*.apk
           if-no-files-found: error
+
+      - name: Publish to Release (public, no login needed)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: debug-${{ github.run_number }}
+          name: RikkaHub 头像版 debug #${{ github.run_number }}
+          prerelease: true
+          body: |
+            自动构建的 debug APK，包名 `me.rerere.rikkahub.debug`，可与官方版共存。
+            提交：${{ github.sha }}
+          files: app/build/outputs/apk/github/debug/*.apk
