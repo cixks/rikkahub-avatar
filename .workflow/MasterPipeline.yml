@@ -13,11 +13,10 @@ stages:
     strategy: naturally
     trigger: auto
     steps:
-      - step: build@maven
+      - step: build@gcc
         name: build_apk
         displayName: 构建
-        jdkVersion: 11
-        mavenVersion: 3.6.3
+        gccVersion: 9.4
         commands:
           - chmod +x ./build_ci.sh
           - bash ./build_ci.sh
