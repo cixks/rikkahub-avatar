@@ -1,0 +1,3 @@
+#!/bin/sh
+# Gitee Go setup hook placeholder
+export PATH=""
